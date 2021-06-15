@@ -1,0 +1,21 @@
+cabal-version:      3.4
+name:               comonadic-life
+version:            0.0.0.1
+synopsis:           Game of Life using Comonads
+
+homepage:           https://github.com/kvietcong/comonadic-life
+bug-reports:        https://github.com/kvietcong/comonadic-life/issues
+author:             KV Le
+maintainer:         32186663+kvietcong@users.noreply.github.com
+
+extra-source-files:
+    README.md
+
+executable comonads
+    main-is:            comonadic-life.hs
+    ghc-options:        -Wall
+    default-language:   Haskell2010
+    hs-source-dirs:     src
+    build-depends: base
+                 , comonad
+                 , process
