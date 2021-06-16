@@ -1,6 +1,7 @@
+import System.Random
 import Control.Monad (forM_)
 import Data.Maybe (fromMaybe)
-import Data.List (intercalate)
+import Data.List (intercalate, unfoldr)
 import Control.Comonad (Comonad(..))
 import Control.Concurrent (threadDelay)
 import System.Console.ANSI (clearScreen, setCursorPosition, hideCursor, getTerminalSize)
@@ -15,8 +16,13 @@ filterReplace :: [Char] -> Char -> String -> String
 filterReplace toReplace newChar =
     map (\ch ->if ch `elem` toReplace then newChar else ch)
 
-data Cell = Alive | Dead deriving (Eq, Enum)
+data Cell = Alive | Dead deriving (Eq, Enum, Bounded)
 instance Show Cell where show cell = if cell == Alive then "O" else " "
+instance Random Cell where
+    random gen = case randomR (0,1) gen of
+                   (r, gen') -> (toEnum r, gen')
+    randomR (a,b) gen = case randomR (fromEnum a, fromEnum b) gen of
+                          (r, gen') -> (toEnum r, gen')
 
 data Z a = Z [a] a [a] deriving Eq
 
@@ -37,9 +43,11 @@ instance Comonad Z where
     extract (Z _ focus _) = focus
     duplicate z@(Z ls _ rs) = Z getAllLefts z getAllRights
         where getAllLefts = tail $
-                  take (length ls + 1) $ iterate shiftLeft z
+                  scanl (\lastZ _ -> shiftLeft lastZ) z ls
+                  -- take (length ls + 1) $ iterate shiftLeft z
               getAllRights = tail $
-                  take (length rs + 1) $ iterate shiftRight z
+                  scanl (\lastZ _ -> shiftRight lastZ) z rs
+                  -- take (length rs + 1) $ iterate shiftRight z
 
 instance Zipper Z where
     shiftLeft (Z (l:ls) f rs) = Z ls l (f:rs)
@@ -68,11 +76,13 @@ instance Show a => Show (ZZ a) where
 instance Comonad ZZ where
     extract (ZZ innerZips) = extract . extract $ innerZips
     duplicate (ZZ innerZips) = ZZ <$> ZZ ((dupe . dupe) innerZips)
-        where dupe zipper2D = Z (getAllLefts zipper2D) zipper2D (getAllRights zipper2D)
+        where dupe zz = Z (getAllLefts zz) zz (getAllRights zz)
               getAllLefts zz@(Z _ (Z ls _ _) _) = tail $
-                  take (length ls + 1) $ iterate (fmap shiftLeft) zz
+                  scanl (\lastZZ _ -> shiftLeft <$> lastZZ) zz ls
+                  -- take (length ls + 1) $ iterate (fmap shiftLeft) zz
               getAllRights zz@(Z _ (Z _ _ rs) _) = tail $
-                  take (length rs + 1) $ iterate (fmap shiftRight) zz
+                  scanl (\lastZZ _ -> shiftRight <$> lastZZ) zz rs
+                  -- take (length rs + 1) $ iterate (fmap shiftRight) zz
 
 instance Zipper2D ZZ where
     goUp (ZZ innerZips) = ZZ $ shiftLeft innerZips
@@ -81,28 +91,54 @@ instance Zipper2D ZZ where
     goRight (ZZ innerZips) = ZZ $ shiftRight <$> innerZips
 
 getNeighbors :: ZZ a -> [a]
-getNeighbors zipper2D@(ZZ (Z up (Z left _ right) down)) = extract <$> neighbors
-  where canGoLeft = not . null $ left
-        canGoRight = not . null $ right
-        canGoUp = not . null $ up
-        canGoDown = not . null $ down
-        neighbors = [goLeft zipper2D | canGoLeft]
-                 ++ [goLeft . goUp $ zipper2D | canGoLeft && canGoUp]
-                 ++ [goLeft . goDown $ zipper2D | canGoLeft && canGoDown]
-                 ++ [goRight zipper2D | canGoRight]
-                 ++ [goRight . goUp $ zipper2D | canGoRight && canGoUp]
-                 ++ [goRight . goDown $ zipper2D | canGoRight && canGoDown]
-                 ++ [goUp zipper2D | canGoUp]
-                 ++ [goDown zipper2D | canGoDown]
+getNeighbors zz@(ZZ (Z us (Z ls _ rs) ds)) = extract <$> neighbors
+  where canGoLeft = not . null $ ls
+        canGoRight = not . null $ rs
+        canGoUp = not . null $ us
+        canGoDown = not . null $ ds
+        neighbors = [goLeft zz | canGoLeft]
+                 ++ [goLeft . goUp $ zz | canGoLeft && canGoUp]
+                 ++ [goLeft . goDown $ zz | canGoLeft && canGoDown]
+                 ++ [goRight zz | canGoRight]
+                 ++ [goRight . goUp $ zz | canGoRight && canGoUp]
+                 ++ [goRight . goDown $ zz | canGoRight && canGoDown]
+                 ++ [goUp zz | canGoUp]
+                 ++ [goDown zz | canGoDown]
 
-infiCellAlt :: [Cell]
-infiCellAlt = [Alive,Dead] ++ infiCellAlt
+createRandomCellRows :: [Cell] -> Int -> [Z Cell]
+createRandomCellRows cells width = nextRow : createRandomCellRows (drop (width + 1) cells) width
+    where nextRow = Z ls f rs
+          ls = take halfWidth cells
+          rs = take halfWidth . drop halfWidth $ cells
+          f = cells !! width
+          halfWidth = width `div` 2
 
-createCells :: Int -> Int -> ZZ Cell
-createCells width height = ZZ (Z rows (head rows) rows)
-    where cells = take (width `div` 4 - 1) infiCellAlt
-          rows = replicate (height `div` 2 - 1) $ Z cells Alive cells
+createRandomCellGrid :: RandomGen g => Int -> Int -> g -> ZZ Cell
+createRandomCellGrid width height gen = ZZ (Z us f ds)
+    where us = take halfHeight randomRows
+          ds = take halfHeight . drop halfHeight $ randomRows
+          f = randomRows !! height
+          randomRows = createRandomCellRows (randoms gen) width
+          halfHeight = height `div` 2
 
+createInfiniteRandomCellLists :: RandomGen g => g -> [[Cell]]
+createInfiniteRandomCellLists = map randoms . unfoldr (Just . split)
+
+createInfiniteRandomCellRows :: [[Cell]] -> [Z Cell]
+createInfiniteRandomCellRows cells = nextRow : createInfiniteRandomCellRows (drop 3 cells)
+    where nextRow = Z ls f rs
+          ls = cells !! 1
+          rs = cells !! 2
+          f = head . head $ cells
+
+createInfiniteRandomGrid :: RandomGen g => g -> ZZ Cell
+createInfiniteRandomGrid gen = ZZ (Z us f ds)
+    where infiRows = createInfiniteRandomCellRows
+                   $ createInfiniteRandomCellLists gen
+          -- TODO: Fix this so it is actually random
+          us = drop 10 infiRows
+          ds = drop 1000 infiRows
+          f = head infiRows
 
 gameOfLifeRules :: ZZ Cell -> Cell
 gameOfLifeRules cells = case extract cells of
@@ -116,30 +152,45 @@ gameOfLife = iterate (extend gameOfLifeRules)
 microsecondsInSecond :: Int
 microsecondsInSecond = 1000000
 
-customAnimate :: Int -> [a] -> (a -> String) -> IO ()
-customAnimate delay states displayFunction = do
-    forM_ states (\state -> do putStrLn $ displayFunction state
+animate :: Int -> [a] -> (a -> String) -> IO ()
+animate delay states showFunction = do
+    forM_ states (\state -> do putStrLn $ showFunction state
                                threadDelay delay
                                setCursorPosition 0 0)
 
-animate :: Show a => Int -> [a] -> IO ()
-animate delay states = customAnimate delay states show
+showZ :: Show a => Int -> Z a -> String
+showZ width (Z ls f rs) = (unwords . map show . reverse . take safeWidth) ls
+                       ++ between "(" ")" (show f)
+                       ++ (unwords . map show . take safeWidth) rs
+                           where safeWidth = width `div` 4 - 1
 
-animateNoCursor :: Show a => Int -> [a] -> IO ()
-animateNoCursor delay states = customAnimate delay states $ filterReplace "()" ' ' . show
+showZZ :: Show a => Int -> Int -> ZZ a -> String
+showZZ width height (ZZ (Z us f ds)) = do
+    intercalate "\n"
+        [ intercalate "\n"
+            $ (map (filterReplace "()" ' ' . showZ width)
+              . reverse
+              . take safeHeight) us
+        , showZ width f
+        , intercalate "\n"
+            $ (map (filterReplace "()" ' ' . showZ width)
+              . take safeHeight) ds
+        ] where safeHeight = height `div` 2 - 1
 
 evolutionsPerSecond :: Int
-evolutionsPerSecond = 6
+evolutionsPerSecond = 5
 
 main :: IO ()
 main = do
-    (height, width) <- fromMaybe (-1, -1) <$> getTerminalSize
-    putStrLn $ "The terminal dimensions are " ++ show width ++ "x" ++ show height
-    threadDelay $ 2 * microsecondsInSecond
-
     hideCursor
     clearScreen
     setCursorPosition 0 0
+
+    gen <- getStdGen
+    (height, width) <- fromMaybe (-1, -1) <$> getTerminalSize
+
     animate
         (microsecondsInSecond `div` evolutionsPerSecond) 
-        (gameOfLife $ createCells width height)
+        -- (gameOfLife $ createRandomCellGrid 1000 1000 gen)
+        (gameOfLife $ createInfiniteRandomGrid gen)
+        (showZZ width height)
