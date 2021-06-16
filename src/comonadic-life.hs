@@ -35,9 +35,8 @@ instance Functor Z where
         Z (function <$> ls) (function f) (function <$> rs)
 
 instance Show a => Show (Z a) where
-    show (Z ls f rs) = (unwords . (map show . reverse)) ls
-                    ++ between "(" ")" (show f)
-                    ++ (unwords . map show) rs
+    show (Z ls f rs) = (show' . reverse) ls ++ between "(" ")" (show f) ++ show' rs
+                        where show' = unwords . map show
 
 instance Comonad Z where
     extract (Z _ focus _) = focus
@@ -52,7 +51,6 @@ instance Comonad Z where
 instance Zipper Z where
     shiftLeft (Z (l:ls) f rs) = Z ls l (f:rs)
     shiftLeft zipper = zipper
-
     shiftRight (Z ls f (r:rs)) = Z (f:ls) r rs
     shiftRight zipper = zipper
 
@@ -69,9 +67,9 @@ instance Functor ZZ where
 
 instance Show a => Show (ZZ a) where
     show (ZZ (Z us f ds)) = intercalate "\n"
-        [ intercalate "\n" $ (map (filterReplace "()" ' ' . surround " " . show) . reverse) us
-        , between "(" ")" $ show f
-        , intercalate "\n" $ map (filterReplace "()" ' ' . surround " " . show) ds]
+        [(show' . reverse) us, between "(" ")" $ show f, show' ds]
+            where show' = intercalate "\n"
+                        . map (filterReplace "()" ' ' . surround " " . show)
 
 instance Comonad ZZ where
     extract (ZZ innerZips) = extract . extract $ innerZips
@@ -159,23 +157,17 @@ animate delay states showFunction = do
                                setCursorPosition 0 0)
 
 showZ :: Show a => Int -> Z a -> String
-showZ width (Z ls f rs) = (unwords . map show . reverse . take safeWidth) ls
-                       ++ between "(" ")" (show f)
-                       ++ (unwords . map show . take safeWidth) rs
-                           where safeWidth = width `div` 4 - 1
+showZ width (Z ls f rs) = showZ' ls' ++ between "(" ")" (show f) ++ showZ' rs'
+    where safeWidth = width `div` 4 - 1
+          showZ' = unwords . map show
+          (ls', rs') = ((reverse . take safeWidth) ls, take safeWidth rs)
 
 showZZ :: Show a => Int -> Int -> ZZ a -> String
 showZZ width height (ZZ (Z us f ds)) = do
-    intercalate "\n"
-        [ intercalate "\n"
-            $ (map (filterReplace "()" ' ' . showZ width)
-              . reverse
-              . take safeHeight) us
-        , showZ width f
-        , intercalate "\n"
-            $ (map (filterReplace "()" ' ' . showZ width)
-              . take safeHeight) ds
-        ] where safeHeight = height `div` 2 - 1
+    intercalate "\n" [showZZ' us', showZ width f , showZZ' ds']
+        where safeHeight = height `div` 2 - 1
+              showZZ' = intercalate "\n" . map (filterReplace "()" ' ' . showZ width)
+              (us', ds') = ((reverse . take safeHeight) us, take safeHeight ds)
 
 evolutionsPerSecond :: Int
 evolutionsPerSecond = 5
