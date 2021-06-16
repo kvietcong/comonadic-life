@@ -1,9 +1,9 @@
-import System.Random
 import Control.Monad (forM_)
 import Data.Maybe (fromMaybe)
-import Data.List (intercalate, unfoldr)
 import Control.Comonad (Comonad(..))
+import Data.List (intercalate, unfoldr)
 import Control.Concurrent (threadDelay)
+import System.Random (Random(..), getStdGen, RandomGen(..))
 import System.Console.ANSI (clearScreen, setCursorPosition, hideCursor, getTerminalSize)
 
 surround :: String -> String -> String
@@ -138,30 +138,46 @@ createInfiniteRandomGrid gen = ZZ (Z us f ds)
           ds = drop 1000 infiRows
           f = head infiRows
 
+{-
+   Given a 2D zipper, this will give a new state
+   based on the Game of Life Rules
+-}
 gameOfLifeRules :: ZZ Cell -> Cell
 gameOfLifeRules cells = case extract cells of
                           Dead -> if alive == 3 then Alive else Dead
                           Alive -> if alive `elem` [2,3] then Alive else Dead
     where alive = length . filter (==Alive) $ getNeighbors cells
 
+{-|
+   Given a starting state of cells, this function will return
+   a list of all the states that succeed it in sequential order
+-}
 gameOfLife :: ZZ Cell -> [ZZ Cell]
 gameOfLife = iterate (extend gameOfLifeRules)
 
+-- |Microseconds in a second (Used for thread delays)
 microsecondsInSecond :: Int
 microsecondsInSecond = 1000000
 
+-- TODO: Find out why the animation is pausing
+{-|
+   Given a delay between states, the states, and how to display the states
+   animate will print out all the states sequentially
+-}
 animate :: Int -> [a] -> (a -> String) -> IO ()
 animate delay states showFunction = do
     forM_ states (\state -> do putStrLn $ showFunction state
                                threadDelay delay
                                setCursorPosition 0 0)
 
+-- |Safely print out a zipper in a terminal of the given width
 showZ :: Show a => Int -> Z a -> String
 showZ width (Z ls f rs) = showZ' ls' ++ between "(" ")" (show f) ++ showZ' rs'
     where safeWidth = width `div` 4 - 1
           showZ' = unwords . map show
           (ls', rs') = ((reverse . take safeWidth) ls, take safeWidth rs)
 
+-- |Safely print out a 2D zipper in a terminal of the given dimensions
 showZZ :: Show a => Int -> Int -> ZZ a -> String
 showZZ width height (ZZ (Z us f ds)) = do
     intercalate "\n" [showZZ' us', showZ width f , showZZ' ds']
@@ -169,9 +185,11 @@ showZZ width height (ZZ (Z us f ds)) = do
               showZZ' = intercalate "\n" . map (filterReplace "()" ' ' . showZ width)
               (us', ds') = ((reverse . take safeHeight) us, take safeHeight ds)
 
-evolutionsPerSecond :: Int
-evolutionsPerSecond = 5
+-- |How many times the state should be advanced in a second
+statesPerSecond :: Int
+statesPerSecond = 5
 
+-- |Program entry point
 main :: IO ()
 main = do
     hideCursor
@@ -182,7 +200,7 @@ main = do
     (height, width) <- fromMaybe (-1, -1) <$> getTerminalSize
 
     animate
-        (microsecondsInSecond `div` evolutionsPerSecond) 
+        (microsecondsInSecond `div` statesPerSecond) 
         -- (gameOfLife $ createRandomCellGrid 1000 1000 gen)
         (gameOfLife $ createInfiniteRandomGrid gen)
         (showZZ width height)
