@@ -1,78 +1,87 @@
-import Control.Comonad
+import Control.Monad (forM_)
+import Data.Maybe (fromMaybe)
 import Data.List (intercalate)
-import System.Process (system)
+import Control.Comonad (Comonad(..))
 import Control.Concurrent (threadDelay)
+import System.Console.ANSI (clearScreen, setCursorPosition, hideCursor, getTerminalSize)
+
+surround :: String -> String -> String
+surround padding = between padding padding
+
+between :: String -> String -> String -> String
+between pre post mid = pre ++ mid ++ post
+
+filterReplace :: [Char] -> Char -> String -> String
+filterReplace toReplace newChar =
+    map (\ch ->if ch `elem` toReplace then newChar else ch)
 
 data Cell = Alive | Dead deriving (Eq, Enum)
+instance Show Cell where show cell = if cell == Alive then "O" else " "
 
-instance Show Cell where
-    show cell = case cell of
-                  Alive -> "O"
-                  Dead  -> "."
+data Z a = Z [a] a [a] deriving Eq
 
-data Zipper a = Zipper [a] a [a] deriving Eq
+class Comonad c => Zipper c where
+    shiftLeft       :: c b -> c b
+    shiftRight      :: c b -> c b
 
-instance Functor Zipper where
-    fmap function (Zipper left mid right) = Zipper
-        (function <$> left)
-        (function mid)
-        (function <$> right)
+instance Functor Z where
+    fmap function (Z ls f rs) =
+        Z (function <$> ls) (function f) (function <$> rs)
 
-instance Show a => Show (Zipper a) where
-    show (Zipper left mid right) = (show . reverse) left
-                                ++ " " ++ show mid ++ " "
-                                ++ show right
+instance Show a => Show (Z a) where
+    show (Z ls f rs) = (unwords . (map show . reverse)) ls
+                    ++ between "(" ")" (show f)
+                    ++ (unwords . map show) rs
 
-shiftRight :: Zipper a -> Zipper a
-shiftRight (Zipper left mid (r:rs)) = Zipper (mid:left) r rs
-shiftRight zipper@(Zipper _ _ []) = zipper
+instance Comonad Z where
+    extract (Z _ focus _) = focus
+    duplicate z@(Z ls _ rs) = Z getAllLefts z getAllRights
+        where getAllLefts = tail $
+                  take (length ls + 1) $ iterate shiftLeft z
+              getAllRights = tail $
+                  take (length rs + 1) $ iterate shiftRight z
 
-shiftLeft :: Zipper a -> Zipper a
-shiftLeft (Zipper (l:ls) mid right) = Zipper ls l (mid:right)
-shiftLeft zipper@(Zipper [] _ _) = zipper
+instance Zipper Z where
+    shiftLeft (Z (l:ls) f rs) = Z ls l (f:rs)
+    shiftLeft zipper = zipper
 
-instance Comonad Zipper where
-    extract (Zipper _ mid _) = mid
-    duplicate zipper@(Zipper left _ right) = Zipper lefts zipper rights
-        where lefts = tail $ scanl (\z _ -> shiftLeft z) zipper left
-              rights = tail $ scanl (\z _ -> shiftRight z) zipper right
+    shiftRight (Z ls f (r:rs)) = Z (f:ls) r rs
+    shiftRight zipper = zipper
 
-newtype Zipper2D a = Zipper2D (Zipper (Zipper a)) deriving Eq
+newtype ZZ a = ZZ (Z (Z a)) deriving Eq
 
-instance Functor Zipper2D where
-    fmap function (Zipper2D zipper2D) = Zipper2D $
-        (fmap . fmap) function zipper2D
+class Comonad c => Zipper2D c where
+    goUp    :: c a -> c a
+    goLeft  :: c a -> c a
+    goDown  :: c a -> c a
+    goRight :: c a -> c a
 
-instance Show a => Show (Zipper2D a) where
-    show (Zipper2D (Zipper upZips (Zipper left mid right) downZips)) =
-        intercalate "\n" [
-            intercalate "\n" ((map show . reverse) upZips),
-            (show . reverse) left ++ "{" ++ show mid ++ "}" ++ show right,
-            intercalate "\n" (map show downZips)]
+instance Functor ZZ where
+    fmap function (ZZ zz) = ZZ $ (fmap . fmap) function zz
 
-instance Comonad Zipper2D where
-    extract (Zipper2D zipper2D) = extract . extract $ zipper2D
-    duplicate (Zipper2D zipper2D) = Zipper2D <$> Zipper2D ((dupe . dupe) zipper2D)
-        where dupe zipper = Zipper (lefts zipper) zipper (rights zipper)
-              lefts zipper@(Zipper _ (Zipper left _ _) _) =
-                  tail $ scanl (\z _ -> shiftLeft <$> z) zipper left
-              rights zipper@(Zipper _ (Zipper _ _ right) _) =
-                  tail $ scanl (\z _ -> shiftRight <$> z) zipper right
+instance Show a => Show (ZZ a) where
+    show (ZZ (Z us f ds)) = intercalate "\n"
+        [ intercalate "\n" $ (map (filterReplace "()" ' ' . surround " " . show) . reverse) us
+        , between "(" ")" $ show f
+        , intercalate "\n" $ map (filterReplace "()" ' ' . surround " " . show) ds]
 
-goUp :: Zipper2D a -> Zipper2D a
-goUp (Zipper2D zipper2D) = Zipper2D $ shiftLeft zipper2D
+instance Comonad ZZ where
+    extract (ZZ innerZips) = extract . extract $ innerZips
+    duplicate (ZZ innerZips) = ZZ <$> ZZ ((dupe . dupe) innerZips)
+        where dupe zipper2D = Z (getAllLefts zipper2D) zipper2D (getAllRights zipper2D)
+              getAllLefts zz@(Z _ (Z ls _ _) _) = tail $
+                  take (length ls + 1) $ iterate (fmap shiftLeft) zz
+              getAllRights zz@(Z _ (Z _ _ rs) _) = tail $
+                  take (length rs + 1) $ iterate (fmap shiftRight) zz
 
-goDown :: Zipper2D a -> Zipper2D a
-goDown (Zipper2D zipper2D) = Zipper2D $ shiftRight zipper2D
+instance Zipper2D ZZ where
+    goUp (ZZ innerZips) = ZZ $ shiftLeft innerZips
+    goDown (ZZ innerZips) = ZZ $ shiftRight innerZips
+    goLeft (ZZ innerZips) = ZZ $ shiftLeft <$> innerZips
+    goRight (ZZ innerZips) = ZZ $ shiftRight <$> innerZips
 
-goLeft :: Zipper2D a -> Zipper2D a
-goLeft (Zipper2D zipper2D) = Zipper2D $ shiftLeft <$> zipper2D
-
-goRight :: Zipper2D a -> Zipper2D a
-goRight (Zipper2D zipper2D) = Zipper2D $ shiftRight <$> zipper2D
-
-getNeighbors :: Zipper2D a -> [a]
-getNeighbors zipper2D@(Zipper2D (Zipper up (Zipper left _ right) down)) = extract <$> neighbors
+getNeighbors :: ZZ a -> [a]
+getNeighbors zipper2D@(ZZ (Z up (Z left _ right) down)) = extract <$> neighbors
   where canGoLeft = not . null $ left
         canGoRight = not . null $ right
         canGoUp = not . null $ up
@@ -89,53 +98,48 @@ getNeighbors zipper2D@(Zipper2D (Zipper up (Zipper left _ right) down)) = extrac
 infiCellAlt :: [Cell]
 infiCellAlt = [Alive,Dead] ++ infiCellAlt
 
-exampleCells :: Zipper2D Cell
-exampleCells = Zipper2D (Zipper rows (head rows) rows)
-    where cells = take 36 infiCellAlt
-          rows = replicate 12 $ Zipper cells Alive cells
+createCells :: Int -> Int -> ZZ Cell
+createCells width height = ZZ (Z rows (head rows) rows)
+    where cells = take (width `div` 4 - 1) infiCellAlt
+          rows = replicate (height `div` 2 - 1) $ Z cells Alive cells
 
-class Display a where
-    display :: a -> String
 
-instance Show a => Display (Zipper a) where
-    display (Zipper left mid right) = concat ((map show . reverse) left
-                                   ++ [show mid]
-                                   ++ map show right)
-
-instance Show a => Display (Zipper2D a) where
-    display (Zipper2D (Zipper upZips midZip downZips)) =
-        intercalate "\n" [
-            intercalate "\n" ((map display . reverse) upZips),
-            display midZip,
-            intercalate "\n" (map display downZips)]
-
-gameOfLifeRules :: Zipper2D Cell -> Cell
-gameOfLifeRules cells = case cell of
+gameOfLifeRules :: ZZ Cell -> Cell
+gameOfLifeRules cells = case extract cells of
                           Dead -> if alive == 3 then Alive else Dead
                           Alive -> if alive `elem` [2,3] then Alive else Dead
-    where cell = extract cells
-          neighbors = getNeighbors cells
-          alive = length . filter (==Alive) $ neighbors
+    where alive = length . filter (==Alive) $ getNeighbors cells
 
-gameOfLife :: Zipper2D Cell -> [Zipper2D Cell]
+gameOfLife :: ZZ Cell -> [ZZ Cell]
 gameOfLife = iterate (extend gameOfLifeRules)
 
-microSecondsInSecond :: Int
-microSecondsInSecond = 1000000
+microsecondsInSecond :: Int
+microsecondsInSecond = 1000000
 
-customAnimate :: Display a => Int -> [a] -> (a -> String) -> IO ()
+customAnimate :: Int -> [a] -> (a -> String) -> IO ()
 customAnimate delay states displayFunction = do
-    mapM_
-        (\state -> do
-            putStrLn $ displayFunction state
-            threadDelay delay
-            system "cls"
-        ) states
+    forM_ states (\state -> do putStrLn $ displayFunction state
+                               threadDelay delay
+                               setCursorPosition 0 0)
 
-animate :: Display a => Int -> [a] -> IO ()
-animate delay states = customAnimate delay states display
+animate :: Show a => Int -> [a] -> IO ()
+animate delay states = customAnimate delay states show
+
+animateNoCursor :: Show a => Int -> [a] -> IO ()
+animateNoCursor delay states = customAnimate delay states $ filterReplace "()" ' ' . show
+
+evolutionsPerSecond :: Int
+evolutionsPerSecond = 6
 
 main :: IO ()
 main = do
-    _ <- system "cls"
-    animate (microSecondsInSecond `div` 3) (gameOfLife exampleCells)
+    (height, width) <- fromMaybe (-1, -1) <$> getTerminalSize
+    putStrLn $ "The terminal dimensions are " ++ show width ++ "x" ++ show height
+    threadDelay $ 2 * microsecondsInSecond
+
+    hideCursor
+    clearScreen
+    setCursorPosition 0 0
+    animate
+        (microsecondsInSecond `div` evolutionsPerSecond) 
+        (gameOfLife $ createCells width height)

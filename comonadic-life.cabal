@@ -19,3 +19,4 @@ executable comonads
     build-depends: base
                  , comonad
                  , process
+                 , ansi-terminal
